@@ -10,7 +10,7 @@ import javax.swing.UIManager
 
 object HttpHighlighter {
     private const val SYNTAX_STYLE = "text/http-request"
-    private const val HEADERS_ONLY_STYLE = "text/http-headers-only"
+    internal const val HEADERS_ONLY_STYLE = "text/http-headers-only"
     private var registered = false
 
     fun attach(textArea: RSyntaxTextArea) {

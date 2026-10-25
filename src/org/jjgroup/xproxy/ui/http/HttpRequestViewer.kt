@@ -26,12 +26,15 @@ import javax.swing.JPopupMenu
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
 import javax.swing.JTabbedPane
+import javax.swing.JViewport
 import javax.swing.SwingUtilities
 import javax.swing.UIManager
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
+private const val PRE_LARGE_SCROLL_MODE = "xproxy.pre-large-scroll-mode"
 
 class HttpRequestResponseViewer(
     requestEditable: Boolean = false,
@@ -97,6 +100,11 @@ class HttpRequestResponseViewer(
     }
     @Volatile
     private var requestRenderGeneration: Long = 0
+    private val responseDocumentListener = object : DocumentListener {
+        override fun insertUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
+        override fun removeUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
+        override fun changedUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
+    }
 
     internal val responseRenderer = ResponseRenderer(
         responsePrettyArea = responsePrettyArea,
@@ -118,6 +126,8 @@ class HttpRequestResponseViewer(
             applyResponseTextAreaPerformanceMode(large)
             if (::responseSearchController.isInitialized) responseSearchController.refreshHighlights()
         },
+        responsePerformanceMode = { large -> applyResponseTextAreaPerformanceMode(large) },
+        responsePrettyDocumentListener = responseDocumentListener,
         responseRenderTabIndexProvider = { responseRenderTabIndex() }
     )
 
@@ -134,11 +144,31 @@ class HttpRequestResponseViewer(
     }
 
     private fun applyTextAreaPerformanceMode(area: RSyntaxTextArea, large: Boolean, wrapEnabled: Boolean) {
-        // 大文本模式只降低高亮开销,不能覆盖用户的自动换行设置。
+        // 大文本模式只降低高亮和布局开销,不能覆盖用户的自动换行设置。
         area.lineWrap = wrapEnabled
         area.wrapStyleWord = false
         area.highlightCurrentLine = !large
-        if (!large) {
+        val viewport = SwingUtilities.getAncestorOfClass(JViewport::class.java, area) as? JViewport
+        if (viewport != null) {
+            if (large) {
+                if (viewport.getClientProperty(PRE_LARGE_SCROLL_MODE) == null) {
+                    viewport.putClientProperty(PRE_LARGE_SCROLL_MODE, viewport.scrollMode)
+                }
+                // 超高的换行视图直接重绘可见区,避免 backing-store/blit 的额外缓冲和拷贝。
+                if (viewport.scrollMode != JViewport.SIMPLE_SCROLL_MODE) {
+                    viewport.scrollMode = JViewport.SIMPLE_SCROLL_MODE
+                }
+            } else {
+                val previous = viewport.getClientProperty(PRE_LARGE_SCROLL_MODE) as? Int
+                if (previous != null) {
+                    if (viewport.scrollMode != previous) viewport.scrollMode = previous
+                    viewport.putClientProperty(PRE_LARGE_SCROLL_MODE, null)
+                }
+            }
+        }
+        if (large) {
+            HttpHighlighter.attachHeadersOnly(area)
+        } else {
             HttpHighlighter.attach(area)
         }
     }
@@ -248,11 +278,7 @@ class HttpRequestResponseViewer(
             })
         }
         listOf(responsePrettyArea, responseRawArea, responseRenderArea).forEach { area ->
-            area.document.addDocumentListener(object : DocumentListener {
-                override fun insertUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
-                override fun removeUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
-                override fun changedUpdate(e: DocumentEvent?) = responseSearchController.refreshHighlights()
-            })
+            area.document.addDocumentListener(responseDocumentListener)
         }
 
         split.leftComponent = requestPanel

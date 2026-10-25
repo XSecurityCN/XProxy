@@ -10,7 +10,9 @@ import org.jjgroup.xproxy.fuzzer.request.splitMessage
 import org.jjgroup.xproxy.settings.core.CharsetPolicy
 import org.jjgroup.xproxy.settings.core.ResponsePrettySettings
 import org.jjgroup.xproxy.ui.highlight.HttpHighlighter
+import org.fife.ui.rsyntaxtextarea.RSyntaxDocument
 import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants
 import java.awt.CardLayout
 import java.awt.Rectangle
 import java.util.concurrent.ExecutorService
@@ -21,6 +23,7 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTabbedPane
 import javax.swing.SwingUtilities
+import javax.swing.event.DocumentListener
 
 // SSE 流式刷新时,判断"是否在底部"的阈值(像素):可见区底端距文档底小于该值则视为在底部,新数据到来时跟随滚到底。
 private const val SSE_BOTTOM_FOLLOW_THRESHOLD = 48
@@ -39,6 +42,8 @@ internal class ResponseRenderer(
     private val renderImageCardId: String,
     private val renderUnsupportedCardId: String,
     private val responseSearchControllerRefresh: () -> Unit,
+    private val responsePerformanceMode: (Boolean) -> Unit,
+    private val responsePrettyDocumentListener: DocumentListener,
     private val responseRenderTabIndexProvider: () -> Int
 ) {
     val renderExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -50,6 +55,9 @@ internal class ResponseRenderer(
 
     @Volatile
     var renderInProgress: Boolean = false
+
+    @Volatile
+    var prettyMaterializationInProgress: Boolean = false
 
     var currentRawSource: String = ""
     var userChangedTabGeneration: Long = -1L
@@ -102,6 +110,7 @@ internal class ResponseRenderer(
         val generation = renderGeneration + 1
         renderGeneration = generation
         renderInProgress = true
+        prettyMaterializationInProgress = false
         deferredPrettyResponse = null
         deferredPrettyRawResponse = null
         deferredRenderState = null
@@ -371,6 +380,7 @@ internal class ResponseRenderer(
         responseRawArea.putClientProperty("xproxy.large-viewer-mode", state.disableHighlight)
         responsePrettyArea.putClientProperty("xproxy.large-viewer-mode", state.disableHighlight)
         responseRenderArea.putClientProperty("xproxy.large-viewer-mode", state.disableHighlight)
+        responsePerformanceMode(state.disableHighlight)
 
         // 流式(SSE)实时刷新前,先记录可见文本区的滚动位置,替换文本后恢复(在底部则跟随新数据滚到底,
         // 否则保持原视图),避免每次刷新都跳回顶部。
@@ -390,11 +400,11 @@ internal class ResponseRenderer(
             responseRenderArea.caretPosition = 0
         }
 
-        if (state.headersOnlyHighlight) {
+        if (state.disableHighlight) {
             HttpHighlighter.attachHeadersOnly(responseRawArea)
             HttpHighlighter.attachHeadersOnly(responsePrettyArea)
             HttpHighlighter.attachHeadersOnly(responseRenderArea)
-        } else if (state.disableHighlight) {
+        } else if (state.headersOnlyHighlight) {
             HttpHighlighter.attachHeadersOnly(responseRawArea)
             HttpHighlighter.attachHeadersOnly(responsePrettyArea)
             HttpHighlighter.attachHeadersOnly(responseRenderArea)
@@ -482,10 +492,11 @@ internal class ResponseRenderer(
     fun materializeDeferredPrettyResponseIfNeeded() {
         val deferred = deferredPrettyResponse
         val deferredRaw = deferredPrettyRawResponse
-        if (deferred == null && deferredRaw == null) {
+        if ((deferred == null && deferredRaw == null) || prettyMaterializationInProgress) {
             return
         }
 
+        prettyMaterializationInProgress = true
         val generation = renderGeneration
         responsePrettyArea.text = "Formatting pretty view..."
         responsePrettyArea.caretPosition = 0
@@ -522,28 +533,44 @@ internal class ResponseRenderer(
                     }
                 }
             }.getOrElse { "Failed to render Pretty view: ${it.message}" }
+            val displayPrettyText = foldLongLinesForViewer(
+                truncateForViewer(
+                    prettyText,
+                    ResponsePrettySettings.getLargeResponsePreviewMaxChars(),
+                    "pretty response"
+                ).first
+            )
+            // WrappedSyntaxView 会反复测量超长 token 的剩余部分,单个长行可能退化为平方级布局耗时。
+            // 与 Raw 一样先按固定长度折行,不丢弃内容;进入 Swing 后仍由 lineWrap 按视口宽度软换行。
+            // 未挂到组件的 Document 没有 View/重绘监听,可安全在后台接收完整文本。
+            // 若直接在可见文档分批插入,换行 View 会在每批后重排,EDT 仍会随文档增长而阻塞。
+            val document = RSyntaxDocument(SyntaxConstants.SYNTAX_STYLE_NONE)
+            document.insertString(0, displayPrettyText, null)
+            document.addDocumentListener(responsePrettyDocumentListener)
 
             SwingUtilities.invokeLater {
                 if (generation != renderGeneration) {
                     return@invokeLater
                 }
-                val displayPrettyText = truncateForViewer(
-                    prettyText,
-                    ResponsePrettySettings.getLargeResponsePreviewMaxChars(),
-                    "pretty response"
-                ).first
-                responsePrettyArea.text = displayPrettyText
-                responsePrettyArea.caretPosition = 0
-                val threshold = ResponsePrettySettings.getAutoPrettyMaxBytes().coerceAtLeast(0)
-                val sizeHint = (responsePrettyArea.getClientProperty("xproxy.highlight-size-hint") as? Int) ?: responsePrettyArea.text.length
-                if (sizeHint > threshold) {
-                    HttpHighlighter.attachHeadersOnly(responsePrettyArea)
-                } else {
-                    applySyntax(responsePrettyArea, BodyKind.OTHER)
+                // setDocument 在可见组件上会同步计算整份换行布局;短暂隐藏可把首次布局推迟到绘制可见区。
+                responsePrettyArea.isVisible = false
+                try {
+                    responsePrettyArea.document = document
+                    responsePrettyArea.caretPosition = 0
+                    val threshold = ResponsePrettySettings.getAutoPrettyMaxBytes().coerceAtLeast(0)
+                    val sizeHint = (responsePrettyArea.getClientProperty("xproxy.highlight-size-hint") as? Int) ?: responsePrettyArea.text.length
+                    if (sizeHint > threshold || responsePrettyArea.getClientProperty("xproxy.large-viewer-mode") == true) {
+                        HttpHighlighter.attachHeadersOnly(responsePrettyArea)
+                    } else {
+                        applySyntax(responsePrettyArea, BodyKind.OTHER)
+                    }
+                    deferredPrettyResponse = null
+                    deferredPrettyRawResponse = null
+                    prettyMaterializationInProgress = false
+                    responseSearchControllerRefresh()
+                } finally {
+                    responsePrettyArea.isVisible = true
                 }
-                deferredPrettyResponse = null
-                deferredPrettyRawResponse = null
-                responseSearchControllerRefresh()
             }
         }
     }
