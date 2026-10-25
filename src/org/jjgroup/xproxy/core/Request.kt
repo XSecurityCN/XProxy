@@ -116,7 +116,7 @@ open class Request(val template: String, val words: List<String?>, val learnBori
             return request
         }
 
-        if (Utils.getHeaders(String(request)).contains("Content-Length: ")) {
+        if (Utils.getHeaders(String(request)).contains("Content-Length: ", ignoreCase = true)) {
             val start = Utils.getBodyStart(request)
             val contentLength = request.size - start
             try {
@@ -170,7 +170,7 @@ open class Request(val template: String, val words: List<String?>, val learnBori
 
             val header_str = String(header_name) // todo check this actually works
 
-            if (header == header_str) {
+            if (header.equals(header_str, ignoreCase = true)) {
                 return intArrayOf(line_start, headerValueStart, i - 2)
             }
 

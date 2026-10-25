@@ -56,9 +56,14 @@ fun detectBodyKind(headers: Map<String, String>, body: String): BodyKind {
     }
 }
 
-fun normalizeRequestText(input: String): String = buildString {
-    append(input.replace("\r\n", "\n").replace("\n", "\r\n"))
-    if (!endsWith("\r\n\r\n")) {
+fun normalizeRequestText(input: String): String {
+    val normalized = input.replace("\r\n", "\n").replace("\n", "\r\n")
+    // 已有头体分隔符时正文必须保持原样;在完整报文末尾补 CRLFCRLF 会把额外字节并入 H2 DATA。
+    if (normalized.contains("\r\n\r\n")) {
+        return normalized
+    }
+    return buildString(normalized.length + 4) {
+        append(normalized)
         if (!endsWith("\r\n")) {
             append("\r\n")
         }

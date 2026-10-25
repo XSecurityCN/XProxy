@@ -101,6 +101,9 @@ internal fun normalizeHttp2RequestForEngine(service: HttpService, requestText: S
             continue
         }
         if (name == "host") {
+            if (line.substringAfter(':', "").trim().isEmpty()) {
+                continue
+            }
             hasHost = true
         }
         retainedHeaders.add(line)
@@ -148,23 +151,23 @@ private fun normalizeHttp2Path(target: String): String {
 }
 
 internal fun formatHttp2ResponseForDisplay(rawResponse: String): String {
-    if (!rawResponse.contains(":status:", ignoreCase = true)) {
+    val parsed = splitMessage(rawResponse)
+    if (!parsed.headers.contains(":status:", ignoreCase = true)) {
         return rawResponse
     }
-    val normalized = normalizeRequestText(rawResponse)
-    val split = normalized.split("\r\n\r\n", limit = 2)
-    val headerBlock = split.firstOrNull().orEmpty()
-    val body = if (split.size > 1) split[1] else ""
+    // 只归一化响应头;br/gzip 等压缩正文中的 0x0A 不能被改成 CRLF。
+    val headerBlock = parsed.headers.replace("\r\n", "\n").replace("\n", "\r\n")
+    val body = parsed.body
 
-    val lines = headerBlock.split("\r\n").filter { it.isNotBlank() }.toMutableList()
+    val lines = headerBlock.split(HEADER_LINE_SPLIT).filter { it.isNotBlank() }.toMutableList()
     val statusIndex = lines.indexOfFirst { it.startsWith(":status:", ignoreCase = true) }
     if (statusIndex < 0) {
-        return normalized
+        return rawResponse
     }
 
     val statusCode = lines[statusIndex].substringAfter(':').substringAfter(':').trim().toIntOrNull()
     if (statusCode == null) {
-        return normalized
+        return rawResponse
     }
 
     lines.removeAt(statusIndex)

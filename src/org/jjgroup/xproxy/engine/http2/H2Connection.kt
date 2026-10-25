@@ -80,19 +80,19 @@ class H2Connection(val target: URL, val seedQueue: Queue<Request>, private val r
                    name = header
                 }
 
-                if (name == "Connection") {
+                if (name.equals("Connection", ignoreCase = true)) {
                     continue
                 }
 
-                if (name == ":connection") {
+                if (name.equals(":connection", ignoreCase = true)) {
                     name = "Connection"
                 }
 
-                if (name == "Host" && host == "") {
+                if (name.equals("Host", ignoreCase = true) && host == "") {
                     host = value
                 }
 
-                if (name == "Cookie") {
+                if (name.equals("Cookie", ignoreCase = true)) {
                     val cookiesplit = value.split(";")
                     for (cookie: String in cookiesplit) {
                         if (cookie != "") {
@@ -134,7 +134,9 @@ class H2Connection(val target: URL, val seedQueue: Queue<Request>, private val r
             if (!pseudoHeaders.containsKey(":path")) {
                 result.add(Pair(":path", parsedRequest.path))
             }
-            if (!pseudoHeaders.containsKey(":authority")) {
+            if (pseudoHeaders[":authority"].isNullOrBlank()) {
+                // 显式空 :authority 同样回退到 Host,避免发出必然被严格服务器拒绝的空 authority。
+                pseudoHeaders.remove(":authority")
                 result.add(Pair(":authority", host))
                 stripHost = true // if there's no :authority and there is a Host header, strip the first instance of the host header
             }

@@ -134,7 +134,8 @@ class HttpRequestResponseViewer(
     }
 
     private fun applyTextAreaPerformanceMode(area: RSyntaxTextArea, large: Boolean, wrapEnabled: Boolean) {
-        area.lineWrap = if (large) false else wrapEnabled
+        // 大文本模式只降低高亮开销,不能覆盖用户的自动换行设置。
+        area.lineWrap = wrapEnabled
         area.wrapStyleWord = false
         area.highlightCurrentLine = !large
         if (!large) {
