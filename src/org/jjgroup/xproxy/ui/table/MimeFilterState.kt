@@ -1,6 +1,7 @@
 package org.jjgroup.xproxy.ui.table
 
 import org.jjgroup.xproxy.fuzzer.request.splitMessage
+import org.jjgroup.xproxy.proxy.core.decodeHttpBodyForSearch
 
 /**
  * 不可变的过滤器快照,可在任意线程(含后台扫描线程)上安全使用。
@@ -101,13 +102,18 @@ data class MimeFilterSnapshot(
 
         val requestParsed = splitMessage(requestRaw)
         val responseParsed = splitMessage(responseRaw)
-        val scopedText = buildString {
+        fun scopedText(decodeBodies: Boolean) = buildString {
             if (keywordScopeRequestHeader) {
                 append(requestParsed.headers)
                 append('\n')
             }
             if (keywordScopeRequestBody) {
-                append(requestParsed.body)
+                val body = if (decodeBodies) {
+                    decodeHttpBodyForSearch(requestParsed.headers, requestParsed.body, response = false)
+                } else {
+                    requestParsed.body
+                }
+                append(body)
                 append('\n')
             }
             if (keywordScopeResponseHeader) {
@@ -115,10 +121,19 @@ data class MimeFilterSnapshot(
                 append('\n')
             }
             if (keywordScopeResponseBody) {
-                append(responseParsed.body)
+                val body = if (decodeBodies) {
+                    decodeHttpBodyForSearch(responseParsed.headers, responseParsed.body, response = true)
+                } else {
+                    responseParsed.body
+                }
+                append(body)
             }
         }
-        return matchesKeyword(scopedText)
+
+        // 原始文本命中时直接返回,兼容已解码的外部记录,也保留英文搜索的快速路径。
+        if (matchesKeyword(scopedText(decodeBodies = false))) return true
+        // 历史 raw 正文通常是 ISO-8859-1 映射的网络字节,未命中时再还原成用户看到的文本。
+        return matchesKeyword(scopedText(decodeBodies = true))
     }
 }
 

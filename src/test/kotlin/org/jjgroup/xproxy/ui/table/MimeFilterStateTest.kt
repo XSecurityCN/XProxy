@@ -4,6 +4,9 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayOutputStream
+import java.nio.charset.Charset
+import java.util.zip.GZIPOutputStream
 
 /**
  * 锁定 [MimeFilterState] 的默认选中语义:默认选中的 MIME 是 [MimeFilterState.defaultTypes]
@@ -56,5 +59,87 @@ class MimeFilterStateTest {
         assertEquals(state.types().toSet(), state.selectedTypes())
         // showAll 与默认不同:默认不含 script/css/image/bin/other。
         assertFalse(state.defaultTypes().containsAll(state.types()))
+    }
+
+    @Test
+    fun `keyword still matches English in a raw response body`() {
+        val response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"Success\"}"
+        val state = MimeFilterState()
+        state.setKeyword("success")
+
+        assertTrue(state.matchesHttp("json", 200, "", response))
+    }
+
+    @Test
+    fun `keyword matches Chinese in an already decoded external response`() {
+        val response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n你好"
+        val state = MimeFilterState()
+        state.setKeyword("你好")
+
+        assertTrue(state.matchesHttp("text", 200, "", response))
+    }
+
+    @Test
+    fun `keyword matches Chinese in a UTF-8 response body stored as wire bytes`() {
+        val body = wireText("{\"message\":\"登录成功\"}", Charsets.UTF_8)
+        val response = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n$body"
+        val state = MimeFilterState()
+        state.setKeyword("登录")
+
+        assertTrue(state.matchesHttp("json", 200, "", response))
+    }
+
+    @Test
+    fun `keyword matches Chinese in a GBK request body stored as wire bytes`() {
+        val body = wireText("username=管理员", Charset.forName("GBK"))
+        val request = "POST /login HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded; charset=GBK\r\n\r\n$body"
+        val state = MimeFilterState()
+        state.setKeyword("管理员")
+
+        assertTrue(state.matchesHttp("text", 200, request, ""))
+    }
+
+    @Test
+    fun `Chinese keyword regex uses decoded body and honors selected scope`() {
+        val body = wireText("登录成功", Charsets.UTF_8)
+        val request = "POST /login HTTP/1.1\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n$body"
+        val state = MimeFilterState()
+        state.setKeyword("登录.*成功")
+        state.setKeywordRegex(true)
+        state.setKeywordScopeRequestBody(false)
+        state.setKeywordScopeRequestHeader(false)
+        state.setKeywordScopeResponseHeader(false)
+        state.setKeywordScopeResponseBody(false)
+        assertFalse(state.matchesHttp("text", 200, request, ""))
+
+        state.setKeywordScopeRequestBody(true)
+        assertTrue(state.matchesHttp("text", 200, request, ""))
+    }
+
+    @Test
+    fun `keyword matches Chinese in a gzip UTF-8 response body`() {
+        val body = gzip("登录成功")
+        val response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Encoding: gzip\r\n\r\n$body"
+        val state = MimeFilterState()
+        state.setKeyword("登录")
+
+        assertTrue(state.matchesHttp("text", 200, "", response))
+    }
+
+    @Test
+    fun `Chinese WebSocket text payload is matched without wire decoding`() {
+        val state = MimeFilterState()
+        state.setKeyword("你好")
+
+        assertTrue(state.matchesWs("text", "{\"message\":\"你好\"}"))
+    }
+
+    private fun wireText(text: String, charset: Charset): String =
+        String(text.toByteArray(charset), Charsets.ISO_8859_1)
+
+    private fun gzip(text: String): String {
+        val output = ByteArrayOutputStream()
+        GZIPOutputStream(output).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        return String(output.toByteArray(), Charsets.ISO_8859_1)
     }
 }

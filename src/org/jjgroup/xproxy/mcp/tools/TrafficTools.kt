@@ -3,9 +3,11 @@ package org.jjgroup.xproxy.mcp.tools
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.jjgroup.xproxy.core.AppLogger
+import org.jjgroup.xproxy.fuzzer.request.splitMessage
 import org.jjgroup.xproxy.mcp.XproxyAppContext
 import org.jjgroup.xproxy.mcp.server.McpJson
 import org.jjgroup.xproxy.mcp.server.mcpSchema
+import org.jjgroup.xproxy.proxy.core.decodeHttpBodyForSearch
 import org.jjgroup.xproxy.proxy.model.ProxyHistoryEntry
 import org.jjgroup.xproxy.proxy.model.ProxyWsHistoryEntry
 
@@ -52,6 +54,12 @@ private fun wsMeta(e: ProxyWsHistoryEntry): Map<String, Any?> = mapOf(
     "sessionId" to e.sessionId
 )
 
+private fun containsHttpKeyword(raw: String, keyword: String, response: Boolean): Boolean {
+    if (raw.contains(keyword, ignoreCase = true)) return true
+    val parsed = splitMessage(raw)
+    return decodeHttpBodyForSearch(parsed.headers, parsed.body, response).contains(keyword, ignoreCase = true)
+}
+
 internal class SearchProxyHistoryTool : BaseTool() {
     override val name = "search_proxy_history"
     override val description = "Query captured proxy traffic (HTTP history) with filters. Returns metadata only (no raw bodies). Use get_proxy_history_entry to fetch full raw request/response by id. Supports content keyword search (scans raw bodies)."
@@ -95,7 +103,9 @@ internal class SearchProxyHistoryTool : BaseTool() {
             // 内容关键词:流式扫全表 raw,命中后再过 metadata 过滤。
             val matched = ArrayList<ProxyHistoryEntry>()
             store.scanHistoryDetails { id, mimeType, code, requestRaw, responseRaw ->
-                if ((requestRaw.contains(keyword, ignoreCase = true) || responseRaw.contains(keyword, ignoreCase = true))) {
+                if (containsHttpKeyword(requestRaw, keyword, response = false) ||
+                    containsHttpKeyword(responseRaw, keyword, response = true)
+                ) {
                     store.loadHistoryById(id)?.let { entry ->
                         if (metaFilter(entry)) matched.add(entry)
                     }
